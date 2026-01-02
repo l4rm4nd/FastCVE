@@ -126,7 +126,7 @@ volumes:
   - ./src/config/setenv.sh:/fastcve/config/setenv.sh
 ```
 
-Note: `INP_ENV_NAME=prod` is not configured for Docker Compose out-of-the-box (`setenv_prod.ini` uses `FCDB_HOST=localhost`). For the split stack, use `dev` or update `setenv_prod.ini` to point to `fastcve-db:5432`.
+For Docker Compose deployments, ensure `setenv_${INP_ENV_NAME}.ini` points to `FCDB_HOST=fastcve-db` and `FCDB_PORT=5432` (this is already true for `dev` and `prod` in this repo).
 
 How To
 ------

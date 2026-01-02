@@ -7,7 +7,7 @@ import logging
 from pydantic.error_wrappers import ValidationError as PydanticValidationError
 from fastapi import APIRouter, Depends, Query, status, HTTPException
 from generic.context import ApplicationContext
-from dependencies import get_app_cntxt
+from web.dependencies import get_app_cntxt
 from typing import Any
 from common.models import SearchInfoType, SearchOptions
 from common.search import search_data, ValidationError

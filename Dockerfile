@@ -1,4 +1,6 @@
-FROM python:3.12-slim
+# FastAPI + Pydantic v1.x stack is not compatible with Python 3.12.
+# Keep Python 3.11 until upgrading FastAPI/Pydantic to a Python-3.12-compatible combination.
+FROM python:3.11-slim
 
 ARG APP_VERSION=notset
 

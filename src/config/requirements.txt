@@ -4,7 +4,7 @@ psycopg2-binary==2.9.9
 requests==2.31.0
 tqdm==4.66.2
 pytz==2024.1
-pydantic==1.10.14
+pydantic==1.10.15
 fastapi==0.95.2
 uvicorn==0.22.0
 xmltodict==0.13.0
