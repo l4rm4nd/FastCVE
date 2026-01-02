@@ -1,13 +1,42 @@
 services:
     #--------------------------------------------------------------------------
-    # Application Database service
+    # Database service
+    #--------------------------------------------------------------------------
+    fastcve-db:
+        image: "${FASTCVE_DB_IMAGE:-postgres:16-alpine3.19}"
+
+        container_name: fastcve-db
+
+        environment:
+            - POSTGRES_USER=${FCDB_USER}
+            - POSTGRES_PASSWORD=${FCDB_PASS}
+            - POSTGRES_DB=vuln_db
+
+        volumes:
+            - vol_fastcve_db:/var/lib/postgresql/data
+            - ./backup:/backup
+
+        ports:
+            - "6630:5432"
+
+        healthcheck:
+            test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER"]
+            interval: 5s
+            timeout: 3s
+            retries: 10
+
+        networks:
+            backend:
+                aliases:
+                    - fastcve-db
+
+    #--------------------------------------------------------------------------
+    # FastCVE application (API + CLI)
     #--------------------------------------------------------------------------
     fastcve:
         image: "${FASTCVE_DOCKER_IMG}:${FASTCVE_DOCKER_TAG}"
 
         container_name: fastcve
-
-        command: postgres ${ENV_POSTGRES_CONF}
 
         build:
             context: $PWD
@@ -16,21 +45,20 @@ services:
             args:
                 APP_VERSION: ${FASTCVE_DOCKER_TAG:-notset}
 
+        depends_on:
+            fastcve-db:
+                condition: service_healthy
+
         environment:
-            - INP_ENV_NAME=${INP_ENV_NAME}
-            - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+            - INP_ENV_NAME=${INP_ENV_NAME:-dev}
             - FCDB_USER=${FCDB_USER}
             - FCDB_PASS=${FCDB_PASS}
             - FCDB_WEB_PARAMS=--host 0.0.0.0 --port 8000 --workers 4
             - NVD_API_KEY=${NVD_API_KEY}
 
-        volumes:
-            - vol_fastcve_db:/var/lib/postgresql/data
-            #- ./src/config/setenv/:/fastcve/config/setenv/
-            - ./:/tmp
+        command: ["/bin/sh", "-c", "python -m web.prestart && exec uvicorn web.app:app $$FCDB_WEB_PARAMS"]
 
         ports:
-            - "6630:5432"
             - "8000:8000"
 
         networks:

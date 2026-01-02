@@ -12,103 +12,178 @@ Overall, `fastcve` is a useful tool for anyone who is interested in keeping up-t
 Technical details
 -----------------
 
+Some key technical characteristics of `fastcve`:
 
-Some key technical characteristics of `fastcve` tool:
+1. **Docker containerization**: Runs as a Docker Compose stack with two services: `fastcve` (API + CLI) and `fastcve-db` (PostgreSQL).
 
-1. **Docker containerization**: This tool would run as a Docker container, meaning it is packaged and runs as a standalone executable unit that includes all its dependencies. This makes it easy to deploy and run the tool on any system that supports Docker.
+2. **Automatically creates the DB on first start**: PostgreSQL creates the initial database (`POSTGRES_DB`) when the DB volume is empty.
 
-2. **Automatically creates the DB on first start**: The tool would automatically create the database when it is started for the first time, eliminating the need for manual setup.
+3. **Automatically creates and upgrades the DB schema if needed**: The schema is created/updated automatically on app start and before CLI commands run.
 
-3. **Automatically creates and upgrades the DB schema if needed**: The tool would automatically manage the database schema, creating it when necessary and upgrading it as needed to support new features or changes in the data structure.
+4. **Capability to populate the DB using external sources**: The `load` command can populate the DB from NVD (CVE/CPE via NVD 2.0 APIs) and additional sources (MITRE CWE/CAPEC, EPSS, CISA KEV).
 
-3. **Capability to populate the DB using NVD APIs (2.0)**: The tool would have the capability to populate the database using APIs from the National Vulnerability Database (NVD), a comprehensive database of vulnerabilities that is maintained by the US National Institute of Standards and Technology.
+5. **Incremental updates**: Re-running `load` fetches only changes since the last successful update (NVD increments are limited to `fetch.max.days.period`, default 120 days).
 
-4. **Automatically updates the DB schema for the latest changes from the previous update**: The tool would automatically update the database with the latest changes, new vulnerabilities, and new Common Platform Enumeration  (CPE) entries, ensuring that the database remains up-to-date and relevant.
+The tool is a comprehensive solution for managing a local vulnerability database and querying it via CLI and HTTP API.
 
-The tool is a comprehensive solution for managing a database of vulnerabilities, Common Platform Enumeration (CPE) entries, designed to make it easy to keep the database up-to-date and relevant, and to simplify the process of querying the database for vulnerabilities and information about them. 
-
-It was designed to be able to handle multiple query entries and maintain a high level of performance. It is optimized to be able to handle a large number of queries efficiently and quickly. The goal is to provide a fast and reliable solution for searching, maintaining and updating information about vulnerabilities and their corresponding CPE entries. The tool is also able to provide information about CWE (Common Weakness Enumerations) and CAPEC (Common Attack Pattern Enumerations and Classification)
+It is optimized to handle many queries efficiently, and to keep vulnerability data up to date via incremental updates.
 
 
 Build
 ----------
 
 
-In order to build the docker image you need to trigger:
-```
-docker compose build
+To build the application image:
+```bash
+docker compose build fastcve
 ```
 
-this would create a new image named as `fastcve:latest`. In case a special tag is needed then export before hand ENV var `DOCKER_TAG=<your_tag>` to generate `fastcve:<your_tag>`
+This builds `${FASTCVE_DOCKER_IMG}:${FASTCVE_DOCKER_TAG}` (application / API / CLI). The default values are in `.env`.
+
+The DB container uses an upstream PostgreSQL image (defaults to `postgres:16-alpine3.19`, configurable via `FASTCVE_DB_IMAGE`) and is not built from this repo.
+
+If you need a custom tag, set `FASTCVE_DOCKER_TAG=<your_tag>` to generate `${FASTCVE_DOCKER_IMG}:<your_tag>`.
+
+
+Migration (single-container -> split DB/app)
+--------------------------------------------
+
+Previous versions (-> v1.2.3) ran the PostgreSQL DB and the FastCVE API/CLI in the same `fastcve` container. The current `docker-compose.yml` splits this into two services: `fastcve-db` (PostgreSQL) and `fastcve` (API/CLI).
+
+To migrate an existing deployment:
+
+1. Stop the old container/stack **without deleting the DB volume**:
+   ```
+   docker compose down
+   ```
+
+2. Update your environment variables / `.env` for the new compose file:
+   - Keep `FCDB_USER` and `FCDB_PASS` the same as before (so the existing DB user credentials still match).
+   - `FCDB_USER`/`FCDB_PASS` are used for both:
+     - the app connection (`postgresql://${FCDB_USER}:${FCDB_PASS}@...`), and
+     - PostgreSQL initialization (`POSTGRES_USER`/`POSTGRES_PASSWORD`) when the DB volume is empty.
+   - For Docker Compose deployments, set `INP_ENV_NAME=dev` (the default). (`setenv_dev.ini` points to the in-stack DB hostname `fastcve-db`.)
+   - (Optional) Set `FASTCVE_DB_IMAGE` if you need a different PostgreSQL image/tag.
+
+3. If you previously bind-mounted `/fastcve/config/setenv` from the host, ensure the *mounted* `setenv_${INP_ENV_NAME}.ini` matches the new split:
+   - `FCDB_HOST=fastcve-db`
+   - `FCDB_PORT=5432`
+
+4. Start the new split stack:
+   ```
+   docker compose up -d
+   ```
+
+Notes:
+- The DB data is still kept in the Docker volume `vol_fastcve_db`. Do not use `docker compose down -v` unless you intentionally want to wipe the DB.
+- If your existing `vol_fastcve_db` was created by an older PostgreSQL *major* version, you must do a `pg_dump`/restore (PostgreSQL data directories are not forward-compatible across major versions).
+- DB admin commands that used to run in `fastcve` now run in `fastcve-db` (example: `docker compose exec fastcve-db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"`).
+- If you change `FCDB_PASS` for an already-initialized `vol_fastcve_db`, PostgreSQL will *not* automatically update the user password; you must run `ALTER USER ... PASSWORD ...` (or recreate the volume).
 
 
 First Run
 ---------
 
-Before starting the container for the first time several env variables has to be exported first:
-```
-export INP_ENV_NAME=<the env name from where settings to be read . i.e.:dev>
-export POSTGRES_PASSWORD=<password for postgre DB user>
-export FCDB_USER=<fastcve DB User Name>
-export FCDB_PASS=<fastcve DB User Password>
+Docker Compose reads `.env` automatically. The defaults in this repo are enough to start a local stack.
+
+Create a local folder for the `/backup` bind-mount used by `fastcve-db` (Linux):
+```bash
+mkdir -p backup && chmod 1777 backup
 ```
 
-To run the container:
+If you want to override them, set variables in your shell or edit `.env`:
+```bash
+export INP_ENV_NAME=dev
+export FCDB_USER=fastcve_db_user
+export FCDB_PASS=fastcve_db_pass
+export FASTCVE_DOCKER_IMG=binare/fastcve
+export FASTCVE_DOCKER_TAG=latest
 ```
-docker compose up
+
+To start the stack:
+```bash
+docker compose up -d --build
 ```
+
+Troubleshooting
+---------------
+
+- `password authentication failed for user ...`: the DB is stored in `vol_fastcve_db`, so if the volume was initialized with different credentials you must reset it with `docker compose down -v` (or manually `ALTER USER` inside Postgres).
 
 Configuration parameters
 ------------------------
 
-The docker container holds the relevant configuration files under `/fastcve/config/setenv`
-This map would contain the following files:
-- `config.ini` - contains app related config parameters
-- `setenv_<${INP_ENV_NAME}>.ini` - contains parameters that are env dependent as per the `INP_ENV_NAME` env variable value. 
+The application container contains the configuration under `/fastcve/config`:
+- `/fastcve/config/setenv/config.ini` - main config (DB DSN, fetch URLs, sync settings, etc.)
+- `/fastcve/config/setenv/setenv_${INP_ENV_NAME}.ini` - env-specific settings loaded by `/fastcve/config/setenv.sh`
 
-For an easy access and modification of the config files, mapping between HOST and container's folder `/fastcve/config/setenv` is recomended that can be specified in the `docker-compose.yml` file.
+In this repo, those files are located under `src/config` and are copied into the image during build.
+
+For easier local edits, you can bind-mount config into the `fastcve` container (example):
+```yaml
+volumes:
+  - ./src/config/setenv:/fastcve/config/setenv
+  - ./src/config/setenv.sh:/fastcve/config/setenv.sh
+```
+
+Note: `INP_ENV_NAME=prod` is not configured for Docker Compose out-of-the-box (`setenv_prod.ini` uses `FCDB_HOST=localhost`). For the split stack, use `dev` or update `setenv_prod.ini` to point to `fastcve-db:5432`.
 
 How To
 ------
 
 
-- **Populate the CVE, CPE, CWE, and CAPEC data for the first time**:
-```
-docker exec fastcve load --data cve cpe cwe capec
+- **Backup the DB (pg_dump, compact)**:
+> Important:
+> The dump is written inside the DB container to `/backup` (bind-mounted from the host via `docker-compose.yml`).
+> Ensure the host `./backup` directory exists and is writable (Linux):
+> `mkdir -p backup && chmod 1777 backup`
+
+```bash
+docker compose exec -T fastcve-db sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc -Z 9 -f "/backup/fastcve_vuln_db_$(date +%F).dump"'
 ```
 
-- **Populate the CVE, and CPE data for the next times**:
-```
-docker exec fastcve load --data cve cpe
+Restore:
+```bash
+docker compose exec -T fastcve-db sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists "/backup/fastcve_vuln_db_YYYY-MM-DD.dump"'
 ```
 
-this will fetch the new/modified data for the period from the last data fetch (for a max of `n` days: parameter set in the config. NVD is allowing max 120 days period)
+- **Populate the DB for the first time (CVE/CPE/CWE/CAPEC/EPSS/KEV)**:
+```bash
+docker compose exec fastcve load --data cve cpe cwe capec epss kev
+```
 
-If there is a need to repopulate the DB for the CWE/CAPEC info, then `--full` and `--drop` options are available for the CWE/CAPEC info load command. `--full` will cause to ignore the fact the CWE/CAPEC data is already present and `--drop` will cause to drop any exiting CWE/CAPEC related data before processing the new downloaded data. When using `--data epss` in combination with `--epss-now`, the load command explicitly fetches the EPSS data for the current date. If `--epss-now` is not specified, the script defaults to retrieve EPSS data from the previous day.
+- **Update CVE/CPE incrementally (and refresh EPSS/KEV)**:
+```bash
+docker compose exec fastcve load --data cve cpe epss kev
+```
+
+This fetches changes since the last successful update (for CVE/CPE), with an upper limit of `fetch.max.days.period` (default 120 days) enforced by the loader.
+
+If there is a need to repopulate the DB for the CWE/CAPEC info, then `--full` and `--drop` options are available for the load command. `--full` ignores the fact the data is already present and `--drop` drops existing data before loading. When using `--data epss` in combination with `--epss-now`, the loader fetches EPSS data for the current date; otherwise it defaults to the previous day.
 
 - search for the data: **get the CVEs details (JSON) for a list of CVE-IDs**
 ```
-docker exec fastcve search --search-info cve --cve CVE-YEAR-ID1 CVE-YEAR-ID2
+docker compose exec fastcve search --search-info cve --cve CVE-YEAR-ID1 CVE-YEAR-ID2
 ```
 
 - search for the data: **search CVEs by the summary text**
 ```
-docker exec fastcve search --search-info cve --keyword '(buffer overflow|memory corruption).*before.*2\.1[0-9]'
+docker compose exec fastcve search --search-info cve --keyword '(buffer overflow|memory corruption).*before.*2\.1[0-9]'
 ```
-Above will search in the CVE text and return the details of those CVEs that would match the summary/description text with the specified keyword. It is possible to specify more than one keywords and each keyword can be specified in form of regexp pattern. If multiple keywords are specified, it would consider as AND condition between the keywords.
+Above will search CVE text and return details for CVEs that match the given keyword(s). Multiple `--keyword` values are treated as an AND condition. Each keyword can be a regular expression.
 
 - search for the data: **get the CVEs IDs for a specific CPE**
 ```
-docker exec fastcve search --search-info cve --cpe23 cpe:2.3:*:*:linux_kernel:2.6.32: --output id
+docker compose exec fastcve search --search-info cve --cpe23 cpe:2.3:*:*:linux_kernel:2.6.32: --output id
 ```
 
-above will return the list of CVE-IDs that are related to `linux_kernel` product for version 2.6.32.
+Above will return the list of CVE-IDs that are related to the `linux_kernel` product for version 2.6.32.
 
-To get the CVE details, request the output in JSON format: `--output json`. 
+To get the CVE details, request the output in JSON format: `--output json`.
 
 To get only those CVEs that were modified in the last `n` days, add the option `--days-back n` i.e. `--days-back 10` - only created/modified in the last **10** days
 
-additional filters are available for the search in CVE DB:
+Additional filters are available for CVE search:
 ```
 --cvss-severity-v2 {low, medium, high}   # retrieve only those CVEs that has the severity as per CVSS score Version 2
 --cvss-severity-v3 {low, medium, high, critical} # retrieve only those CVEs that has the severity as per CVSS score Version 3.x
@@ -123,7 +198,7 @@ additional filters are available for the search in CVE DB:
 - search for the data: **get the valid list of CPE names for a query on part/vendor/product/version etc**.
 
 ```
-docker exec fastcve search --search-info cpe --cpe23 cpe:2.3:h:*:dl*:*: --output id
+docker compose exec fastcve search --search-info cpe --cpe23 cpe:2.3:h:*:dl*:*: --output id
 ```
 
 Above will search for all valid existing CPE 2.3 names that are of hardware type, for any vendor, product starts with `dl`*, and version is any
@@ -131,26 +206,27 @@ Above will search for all valid existing CPE 2.3 names that are of hardware type
 To see for the other options available for both `load` and `search` commands run these with `-h` option
 
 ```
-docker exec fastcve search -h
-docker exec fastcve load -h
+docker compose exec fastcve search -h
+docker compose exec fastcve load -h
 ```
 
-The same search capabilities are exposed through the web interface as well. The web interface is exposed through port 8000 by default. Can be changed in the `docker-compose.yml` file.
+The same search capabilities are exposed through the API (FastAPI). The API is exposed through port 8000 by default and can be changed in `docker-compose.yml`.
 
 The following endpoints are exposed through HTTP requests
 ```
+/status - DB status
 /api/search/cve - search for CVE data
 /api/search/cpe - search for CPE data
 /api/search/cwe - search for CWE data
 /api/search/capec - search for CAPEC data
 ```
 
-For the api definitions and execution instructions you can access on 
+OpenAPI docs:
 ```
 http://localhost:8000/docs
 ```
 
-For the API documentation you can access on 
+Alternative docs view:
 ```
 http://localhost:8000/redoc
 ```
